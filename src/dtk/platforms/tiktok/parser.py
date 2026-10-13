@@ -304,6 +304,7 @@ def _media(
     image_post: Node | None,
     *,
     require_media: bool,
+    allow_missing_video_url: bool = False,
 ) -> Media:
     covers = _covers(video, image_post)
 
@@ -332,7 +333,8 @@ def _media(
     if main is None and require_media:
         if video is None:
             raise item.missing("video")
-        raise video.missing("playAddr")
+        if not allow_missing_video_url:
+            raise video.missing("playAddr")
     return Media(covers=covers, video=main, streams=streams, images=[])
 
 
@@ -349,7 +351,9 @@ def _tags(item: Node) -> list[str]:
     return tags
 
 
-def content_from_node(item: Node, *, fetched_at: datetime) -> Content:
+def content_from_node(
+    item: Node, *, fetched_at: datetime, allow_missing_video_url: bool = False
+) -> Content:
     """Build a :class:`Content` from one ``itemStruct``.
 
     Shared by the detail endpoint and the post list, which return identical
@@ -374,7 +378,14 @@ def content_from_node(item: Node, *, fetched_at: datetime) -> Content:
 
     video = item.opt_child("video")
     # A taken-down or private post keeps its metadata but drops its media URLs.
-    media = _media(item, kind, video, image_post, require_media=not (is_deleted or is_private))
+    media = _media(
+        item,
+        kind,
+        video,
+        image_post,
+        require_media=not (is_deleted or is_private),
+        allow_missing_video_url=allow_missing_video_url,
+    )
 
     duration_ms = None
     if kind is ContentKind.VIDEO and video is not None:
@@ -461,7 +472,14 @@ def parse_author_list(payload: Mapping[str, Any]) -> Page[Author]:
 def parse_author_posts(payload: Mapping[str, Any], *, fetched_at: datetime) -> Page[Content]:
     """Parse ``/api/post/item_list/``."""
     root = _guard(payload)
-    items = [content_from_node(item, fetched_at=fetched_at) for item in root.children("itemList")]
+    # A feed can expose identity and counters without a downloadable primary
+    # video URL. Preserve that observation with media.video=None; detail parsing
+    # remains strict for callers that need playable media. Required identity,
+    # video structure, album media and pagination guards are unchanged.
+    items = [
+        content_from_node(item, fetched_at=fetched_at, allow_missing_video_url=True)
+        for item in root.children("itemList")
+    ]
     has_more = optional_bool(root.present("hasMore"))
     cursor = optional_id(root.get("cursor")) if has_more else None
     if has_more and cursor is None:
